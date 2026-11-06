@@ -86,6 +86,31 @@
         font-weight: 700;
       }
 
+      .lyrics {
+        position: absolute;
+        z-index: 1;
+        left: 50%;
+        bottom: 112px;
+        width: min(760px, calc(100vw - 32px));
+        padding: 12px 20px;
+        transform: translateX(-50%);
+        border: 1px solid #fff9;
+        border-radius: 18px;
+        color: #fff;
+        background: #193d4dbd;
+        box-shadow: 0 8px 26px #173a4a35;
+        font-size: clamp(.95rem, 2.6vw, 1.35rem);
+        font-weight: 800;
+        line-height: 1.35;
+        text-align: center;
+        text-shadow: 0 2px 3px #172f3f99;
+        backdrop-filter: blur(8px);
+        pointer-events: none;
+      }
+
+      .lyrics .sung { color: #ffe486; }
+      .lyrics.is-idle { color: #f0fbff; font-size: .9rem; }
+
       .status {
         position: absolute;
         left: 16px;
@@ -96,11 +121,12 @@
       }
 
       @media (max-width: 600px) {
-        .controls { gap: 4px; padding: 7px; max-width: calc(100vw - 20px); }
+        .controls { gap: 4px; padding: 7px; max-width: calc(100vw - 20px); flex-wrap: wrap; justify-content: center; }
         button { min-width: 0; padding: 10px 13px; font-size: .9rem; }
-        .record-button { min-width: 115px; padding-inline: 10px; font-size: .78rem; }
+        .record-button, .intro-button { min-width: 115px; padding-inline: 10px; font-size: .78rem; }
         .hint { display: none; }
         .status { bottom: 82px; left: 50%; transform: translateX(-50%); white-space: nowrap; }
+        .lyrics { bottom: 145px; padding: 10px 12px; }
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -122,10 +148,15 @@
       <button type="button" data-motion="walk" aria-pressed="false">Walk</button>
       <button type="button" data-motion="dance" aria-pressed="true">Dance</button>
       <button type="button" data-motion="play" aria-pressed="false">Play</button>
+      <button type="button" class="intro-button" id="intro-button">Play Intro + Music</button>
       <button type="button" class="record-button" id="record-button">Export 1080p video</button>
     </nav>
+    <div class="lyrics is-idle" id="lyrics" role="group" aria-label="Intro song lyrics">
+      Press Play Intro + Music to sing along
+    </div>
     <p class="status" id="status" role="status" aria-live="polite">Loading 3D scene…</p>
     <p class="hint">Drag to look around · Scroll to zoom</p>
+    <audio id="intro-audio" preload="auto" src="./04_Audio/music/intro_theme_instrumental.wav"></audio>
 
     <script type="module">
       import * as THREE from "three";
@@ -139,6 +170,15 @@
       const status = document.querySelector("#status");
       const buttons = [...document.querySelectorAll("[data-motion]")];
       const recordButton = document.querySelector("#record-button");
+      const introButton = document.querySelector("#intro-button");
+      const introAudio = document.querySelector("#intro-audio");
+      const lyricsOverlay = document.querySelector("#lyrics");
+      const LYRICS = [
+        "Foxy is a little fox, orange and bright!",
+        "Pip is a tiny chick, fluffy and light!",
+        "Playing together, all through the day,",
+        "Foxy and Pip! Come out and play!",
+      ];
       const EXPORT_WIDTH = 1920;
       const EXPORT_HEIGHT = 1080;
       const EXPORT_RENDER_WIDTH = 1280;
@@ -171,10 +211,11 @@
       renderer.toneMappingExposure = 1.12;
       mount.appendChild(renderer.domElement);
 
-      scene.add(new THREE.AmbientLight("#b5e5ff", 0.75));
+      scene.add(new THREE.AmbientLight("#b5e5ff", 0.25));
+      scene.add(new THREE.HemisphereLight("#c9e8ff", "#bddc99", 0.6));
 
-      const keyLight = new THREE.DirectionalLight("#ffdcac", 3.4);
-      keyLight.position.set(-5, 10, 7);
+      const keyLight = new THREE.DirectionalLight(0xfffaed, 1.5);
+      keyLight.position.set(-8, 8, 7);
       keyLight.castShadow = true;
       keyLight.shadow.mapSize.set(2048, 2048);
       keyLight.shadow.camera.left = -9;
@@ -189,7 +230,7 @@
       rimLight.position.set(4, 6, -6);
       scene.add(rimLight);
 
-      const mat = (color, roughness = 0.62) =>
+      const mat = (color, roughness = 0.7) =>
         new THREE.MeshStandardMaterial({ color, roughness, metalness: 0 });
 
       const materials = {
@@ -210,6 +251,49 @@
         greenDark: mat("#57a54c"),
         flower: mat("#fff2ac"),
       };
+
+      function createFurRoughnessTexture() {
+        const size = 128;
+        const data = new Uint8Array(size * size * 4);
+        let seed = 173;
+        for (let i = 0; i < size * size; i++) {
+          seed = (seed * 1664525 + 1013904223) >>> 0;
+          const value = 228 + (seed >>> 24) % 28;
+          const offset = i * 4;
+          data[offset] = value;
+          data[offset + 1] = value;
+          data[offset + 2] = value;
+          data[offset + 3] = 255;
+        }
+        const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        texture.repeat.set(2, 2);
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.generateMipmaps = true;
+        texture.needsUpdate = true;
+        return texture;
+      }
+      const furRoughnessTexture = createFurRoughnessTexture();
+
+      function applySoftToyMaterials(character) {
+        character.traverse((object) => {
+          if (!object.isMesh) return;
+          const characterMaterials = Array.isArray(object.material)
+            ? object.material
+            : [object.material];
+          for (const material of characterMaterials) {
+            if (!(material instanceof THREE.MeshStandardMaterial)) continue;
+            material.roughness = 0.7;
+            material.metalness = 0;
+            material.roughnessMap = furRoughnessTexture;
+            material.needsUpdate = true;
+          }
+          object.castShadow = true;
+          object.receiveShadow = true;
+        });
+      }
 
       const sphereGeometry = new THREE.SphereGeometry(1, 24, 18);
 
@@ -395,6 +479,7 @@
       );
       ground.rotation.x = -Math.PI / 2;
       ground.position.y = -0.06;
+      ground.castShadow = true;
       ground.receiveShadow = true;
       scene.add(ground);
 
@@ -494,8 +579,28 @@
       }
       const motionLabel = createMotionLabel();
 
+      function createLyricLabel() {
+        const { texture, canvas } = makeCanvasLabel((context, width, height) => {
+          context.clearRect(0, 0, width, height);
+        }, 1200, 180);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: texture,
+          transparent: true,
+          depthWrite: false,
+          toneMapped: false,
+        }));
+        sprite.position.set(0, 0.35, 2.5);
+        sprite.scale.set(7.5, 1, 1);
+        sprite.visible = false;
+        scene.add(sprite);
+        return { sprite, texture, canvas };
+      }
+      const lyricLabel = createLyricLabel();
+
       const fox = makeFox();
       const pip = makeChick();
+      applySoftToyMaterials(fox);
+      applySoftToyMaterials(pip);
       scene.add(fox, pip);
 
       const composer = new EffectComposer(renderer);
@@ -541,6 +646,14 @@
       let exportContext = null;
       let recordingFailed = false;
       let activeRecorder = null;
+      let introActive = false;
+      let introHasStarted = false;
+      let audioContext = null;
+      let audioAnalyser = null;
+      let audioSource = null;
+      let audioDestination = null;
+      let audioFrequencyData = null;
+      let renderedLyricKey = "";
 
       function chooseMotion(value) {
         if (!["walk", "dance", "play"].includes(value)) return;
@@ -556,6 +669,113 @@
 
       buttons.forEach((button) => {
         button.addEventListener("click", () => chooseMotion(button.dataset.motion));
+      });
+
+      async function prepareAudioGraph() {
+        const AudioContextType = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContextType) return false;
+        if (!audioContext) {
+          audioContext = new AudioContextType();
+          audioAnalyser = audioContext.createAnalyser();
+          audioAnalyser.fftSize = 256;
+          audioSource = audioContext.createMediaElementSource(introAudio);
+          audioSource.connect(audioAnalyser);
+          audioAnalyser.connect(audioContext.destination);
+          audioFrequencyData = new Uint8Array(audioAnalyser.frequencyBinCount);
+        }
+        if (audioContext.state === "suspended") {
+          await audioContext.resume();
+        }
+        return true;
+      }
+
+      function drawLyricTexture(line, sungWordCount, isIdle) {
+        const context = lyricLabel.canvas.getContext("2d");
+        if (!context) throw new Error("Could not update the lyric texture.");
+        const { width, height } = lyricLabel.canvas;
+        context.clearRect(0, 0, width, height);
+        if (isIdle) {
+          context.font = "700 50px Trebuchet MS, Segoe UI, sans-serif";
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillStyle = "#ffffff";
+          context.fillText(line, width / 2, height / 2);
+          lyricLabel.texture.needsUpdate = true;
+          return;
+        }
+        context.fillStyle = "rgba(25, 61, 77, 0.86)";
+        context.beginPath();
+        context.roundRect(12, 10, width - 24, height - 20, 42);
+        context.fill();
+        const words = line.split(/\s+/);
+        context.font = "700 52px Trebuchet MS, Segoe UI, sans-serif";
+        context.textBaseline = "middle";
+        const gap = 17;
+        const widths = words.map((word) => context.measureText(word).width);
+        const totalWidth = widths.reduce((sum, wordWidth) => sum + wordWidth, 0)
+          + gap * (words.length - 1);
+        let x = (width - totalWidth) / 2;
+        for (let index = 0; index < words.length; index++) {
+          context.textAlign = "left";
+          context.fillStyle = index < sungWordCount ? "#ffe486" : "#ffffff";
+          context.fillText(words[index], x, height / 2);
+          x += widths[index] + gap;
+        }
+        lyricLabel.texture.needsUpdate = true;
+      }
+
+      function updateLyrics(time) {
+        const isIdle = time === null;
+        const safeTime = isIdle ? 0 : THREE.MathUtils.clamp(time, 0, EXPORT_DURATION);
+        const lineIndex = isIdle
+          ? -1
+          : Math.min(LYRICS.length - 1, Math.floor(safeTime / 3));
+        const line = isIdle ? "Press Play Intro + Music to sing along" : LYRICS[lineIndex];
+        const words = line.split(/\s+/);
+        const progress = isIdle ? 0 : (safeTime >= EXPORT_DURATION
+          ? 1
+          : (safeTime % 3) / 3);
+        const sungWordCount = isIdle ? 0 : Math.min(words.length,
+          Math.floor(progress * words.length) + 1);
+        const key = `${lineIndex}:${sungWordCount}:${isIdle}`;
+        if (key === renderedLyricKey) return;
+        renderedLyricKey = key;
+        lyricsOverlay.classList.toggle("is-idle", isIdle);
+        lyricsOverlay.replaceChildren();
+        for (let index = 0; index < words.length; index++) {
+          const word = document.createElement("span");
+          word.textContent = words[index];
+          if (!isIdle && index < sungWordCount) word.classList.add("sung");
+          lyricsOverlay.append(word);
+          if (index < words.length - 1) lyricsOverlay.append(" ");
+        }
+        drawLyricTexture(line, sungWordCount, isIdle);
+      }
+
+      async function startIntro() {
+        try {
+          introAudio.currentTime = 0;
+          await prepareAudioGraph();
+          await introAudio.play();
+          introActive = true;
+          introHasStarted = true;
+          logo.position.y = 8.2;
+          introButton.textContent = "Intro Playing…";
+          status.textContent = "Playing the 12-second intro with synchronized lyrics";
+          return true;
+        } catch (error) {
+          introActive = false;
+          introButton.textContent = "Play Intro + Music";
+          status.textContent = `Could not play the intro music: ${error instanceof Error ? error.message : String(error)}`;
+          return false;
+        }
+      }
+
+      introButton.addEventListener("click", () => { void startIntro(); });
+      introAudio.addEventListener("ended", () => {
+        introActive = false;
+        introButton.textContent = "Play Intro + Music";
+        if (!recording) status.textContent = "Intro finished · press Play Intro + Music to watch again";
       });
 
       renderer.domElement.addEventListener("pointerdown", (event) => {
@@ -579,20 +799,29 @@
         return phase > 0.94 ? Math.sin(((phase - 0.94) / 0.06) * Math.PI) : 0;
       }
 
-      function animateCharacter(character, time, phase, index) {
+      function animateCharacter(character, time, phase, index, musicPulse, introStage) {
         const { rig, head, legs = [], arms = [], wings = [], tailPivot } = character.userData;
-        const base = motion === "walk" ? time * 5.2 : motion === "dance" ? time * 4.4 : time * 6.1;
+        const baseSpeed = motion === "walk" ? 5.2 : motion === "dance" ? 4.4 : 6.1;
+        const base = time * baseSpeed * (1 + musicPulse * 0.45);
         const swing = Math.sin(base + phase);
         const lift = Math.abs(Math.sin(base + phase));
 
-        rig.position.y = lift * (motion === "walk" ? 0.07 : motion === "dance" ? 0.24 : 0.31);
+        rig.position.y = lift * (motion === "walk" ? 0.07 : motion === "dance" ? 0.24 : 0.31)
+          + musicPulse * 0.12;
         rig.rotation.y = Math.sin(time * 1.25 + phase) * (motion === "play" ? 0.27 : 0.09);
         rig.rotation.z = motion === "walk"
           ? swing * 0.045
           : Math.sin(base * 0.5 + phase) * (motion === "dance" ? 0.12 : 0.08);
         rig.scale.y = 1 - lift * (motion === "walk" ? 0.025 : 0.055);
         rig.scale.x = 1 + lift * (motion === "walk" ? 0.018 : 0.04);
-        character.position.x = (index === 0 ? -1.55 : 1.55)
+        const baseX = introStage
+          ? (index === 0 ? introStage.foxX : introStage.pipX)
+          : (index === 0 ? -1.55 : 1.55);
+        const characterScale = introStage
+          ? (index === 0 ? introStage.foxScale : introStage.pipScale)
+          : 1;
+        character.scale.setScalar(characterScale);
+        character.position.x = baseX
           + Math.sin(time * 0.7 + phase) * (motion === "play" ? 0.23 : 0.08);
         character.rotation.y = Math.sin(time * 0.55 + phase) * 0.08;
         head.rotation.z = Math.sin(time * 2.1 + phase) * 0.055;
@@ -604,8 +833,10 @@
             : 0;
         });
         arms.forEach((arm, armIndex) => {
-          arm.rotation.x = Math.sin(base + phase + armIndex * Math.PI) * (motion === "walk" ? 0.4 : 0.55);
-          arm.rotation.z = (armIndex ? -1 : 1) * (0.12 + Math.sin(base + phase) * 0.22);
+          arm.rotation.x = Math.sin(base + phase + armIndex * Math.PI)
+            * (motion === "walk" ? 0.4 : 0.55) * (1 + musicPulse * 0.5);
+          arm.rotation.z = (armIndex ? -1 : 1)
+            * (0.12 + Math.sin(base + phase) * 0.22 + musicPulse * 0.1);
         });
         wings.forEach((wing, wingIndex) => {
           wing.rotation.z = (wingIndex ? -1 : 1) * (0.08 + lift * 0.5);
@@ -657,14 +888,21 @@
         recordingTimer = 0;
         recording = false;
         activeRecorder = null;
+        audioDestination = null;
         recordButton.disabled = false;
         recordButton.textContent = "Export 1080p video";
         buttons.forEach((button) => { button.disabled = false; });
+        introButton.disabled = false;
+        introAudio.pause();
+        introActive = false;
+        introButton.textContent = "Play Intro + Music";
+        lyricLabel.sprite.visible = false;
 
         if (stream) {
           stream.getTracks().forEach((track) => track.stop());
           stream = null;
         }
+        audioDestination = null;
         exportCanvas = null;
         exportContext = null;
 
@@ -688,7 +926,7 @@
         status.textContent = `Video saved as ${extension.toUpperCase()} · 720p render upscaled to ${EXPORT_WIDTH}×${EXPORT_HEIGHT} · ${EXPORT_FPS} fps`;
       }
 
-      function startRecording() {
+      async function startRecording() {
         const supportedTypes = supportedRecordingTypes();
         if (!HTMLCanvasElement.prototype.captureStream || supportedTypes.length === 0) {
           status.textContent = "Video export is not supported in this browser. Try a current desktop Chrome or Edge.";
@@ -703,10 +941,13 @@
 
         const previousSize = { width: innerWidth, height: innerHeight };
         try {
-          recording = true;
           recordButton.disabled = true;
           recordButton.textContent = "Preparing video…";
           buttons.forEach((button) => { button.disabled = true; });
+          introButton.disabled = true;
+
+          recording = true;
+          lyricLabel.sprite.visible = true;
           renderer.setPixelRatio(1);
           renderer.setSize(EXPORT_RENDER_WIDTH, EXPORT_RENDER_HEIGHT, false);
           camera.aspect = EXPORT_RENDER_WIDTH / EXPORT_RENDER_HEIGHT;
@@ -722,6 +963,16 @@
           stream = exportCanvas.captureStream(EXPORT_FPS);
           if (stream.getVideoTracks().length === 0) {
             throw new Error("The browser did not provide a canvas video track.");
+          }
+          if (audioContext && audioSource) {
+            audioDestination = audioContext.createMediaStreamDestination();
+            audioSource.connect(audioDestination);
+            audioDestination.stream.getAudioTracks().forEach((track) => stream.addTrack(track));
+          } else if (typeof introAudio.captureStream === "function") {
+            introAudio.captureStream().getAudioTracks().forEach((track) => stream.addTrack(track));
+          }
+          if (stream.getAudioTracks().length === 0) {
+            throw new Error("This browser cannot include the intro music in the exported video.");
           }
 
           const chunks = [];
@@ -759,7 +1010,7 @@
             recordingHasStarted = true;
             recordingStartedAt = performance.now();
             recordButton.textContent = "Recording 12 seconds…";
-            status.textContent = `Recording ${motion} · 720p render → 1080p video · ${EXPORT_FPS} fps`;
+            status.textContent = `Recording ${motion} with intro music · 720p render → 1080p video · ${EXPORT_FPS} fps`;
             recordingTimer = window.setTimeout(() => {
               if (recorder.state === "recording") recorder.stop();
             }, EXPORT_DURATION * 1000);
@@ -768,12 +1019,18 @@
           recorder.addEventListener("stop", () => {
             finishRecording(chunks, recorder.mimeType || mimeType, recordingFailed);
           }, { once: true });
+          if (!await startIntro()) throw new Error("The intro music could not be started.");
           recordingStartedAt = performance.now();
           recorder.start(1000);
           beginCapture();
         } catch (error) {
           console.error("Could not start video export:", error);
           recording = false;
+          introActive = false;
+          introAudio.pause();
+          introButton.disabled = false;
+          introButton.textContent = "Play Intro + Music";
+          lyricLabel.sprite.visible = false;
           if (stream) {
             stream.getTracks().forEach((track) => track.stop());
             stream = null;
@@ -804,11 +1061,61 @@
       });
 
       const clock = new THREE.Clock();
+      function introStageAt(time) {
+        if (!introActive) return null;
+        const stages = [
+          { time: 0, foxX: -0.85, pipX: 2.25, foxScale: 1.12, pipScale: 0.78 },
+          { time: 2.5, foxX: -0.85, pipX: 2.25, foxScale: 1.12, pipScale: 0.78 },
+          { time: 3.5, foxX: -2.3, pipX: 0.85, foxScale: 0.78, pipScale: 1.12 },
+          { time: 5.5, foxX: -2.3, pipX: 0.85, foxScale: 0.78, pipScale: 1.12 },
+          { time: 6.5, foxX: -0.95, pipX: 0.95, foxScale: 1.04, pipScale: 1.04 },
+          { time: EXPORT_DURATION, foxX: -0.95, pipX: 0.95, foxScale: 1.04, pipScale: 1.04 },
+        ];
+        let next = stages.findIndex((stage) => stage.time >= time);
+        if (next <= 0) return stages[0];
+        const from = stages[next - 1];
+        const to = stages[next];
+        const raw = THREE.MathUtils.clamp((time - from.time) / (to.time - from.time), 0, 1);
+        const blend = raw * raw * (3 - 2 * raw);
+        return {
+          foxX: THREE.MathUtils.lerp(from.foxX, to.foxX, blend),
+          pipX: THREE.MathUtils.lerp(from.pipX, to.pipX, blend),
+          foxScale: THREE.MathUtils.lerp(from.foxScale, to.foxScale, blend),
+          pipScale: THREE.MathUtils.lerp(from.pipScale, to.pipScale, blend),
+        };
+      }
+
+      function sampleMusicPulse() {
+        if (!introActive || !audioAnalyser || !audioFrequencyData) return 0;
+        audioAnalyser.getByteFrequencyData(audioFrequencyData);
+        const bassBins = Math.min(12, audioFrequencyData.length);
+        let total = 0;
+        for (let index = 0; index < bassBins; index++) total += audioFrequencyData[index];
+        return total / (bassBins * 255);
+      }
+
       function frame() {
         requestAnimationFrame(frame);
-        const time = recording ? (performance.now() - recordingStartedAt) / 1000 : clock.getElapsedTime();
-        animateCharacter(fox, time, 0, 0);
-        animateCharacter(pip, time, Math.PI, 1);
+        const time = introActive ? introAudio.currentTime : clock.getElapsedTime();
+        const introTime = introHasStarted ? introAudio.currentTime : null;
+        const introStage = introStageAt(time);
+        const musicPulse = sampleMusicPulse();
+        updateLyrics(introTime);
+        animateCharacter(fox, time, 0, 0, musicPulse, introStage);
+        animateCharacter(pip, time, Math.PI, 1, musicPulse, introStage);
+        if (introActive) {
+          if (time < 9) {
+            logo.position.y = 8.2;
+          } else {
+            const progress = THREE.MathUtils.clamp((time - 9) / 3, 0, 1);
+            const overshoot = 1.70158;
+            const eased = 1 + (overshoot + 1) * (progress - 1) ** 3
+              + overshoot * (progress - 1) ** 2;
+            logo.position.y = THREE.MathUtils.lerp(8.2, 5.1, eased);
+          }
+        } else {
+          logo.position.y = 5.1;
+        }
         camera.position.x = Math.sin(orbit.y) * zoom;
         camera.position.z = Math.cos(orbit.y) * (innerWidth < 600 ? zoom + 2.3 : zoom);
         camera.position.y = 5.2 + orbit.x * 6;
